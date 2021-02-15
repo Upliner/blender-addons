@@ -1,6 +1,6 @@
 import bpy, re
 from   mathutils      import Vector
-from   ...utils       import copy_bone, flip_bone
+from   ...utils       import copy_bone_simple as copy_bone, flip_bone
 from   ...utils       import org, strip_org, make_deformer_name, connected_children_names, make_mechanism_name
 from   ...utils       import create_widget
 from   ...utils.mechanism import make_property
