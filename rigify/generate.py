@@ -97,16 +97,10 @@ class Generator(base_generate.BaseGenerator):
             elif name in bpy.data.objects:
                 obj = bpy.data.objects[name]
 
-        if not obj:
-            obj = bpy.data.objects.new(name, bpy.data.armatures.new(name))
-            obj.display_type = 'WIRE'
-            self.collection.objects.link(obj)
-
-        elif obj.name not in self.collection.objects:  # rig exists but was deleted
+        if obj and obj.name not in self.collection.objects:  # rig exists but was deleted
             self.collection.objects.link(obj)
 
         meta_data.rigify_target_rig = obj
-        obj.data.pose_position = 'POSE'
 
         self.obj = obj
         return obj
@@ -162,15 +156,16 @@ class Generator(base_generate.BaseGenerator):
         context = self.context
 
         # Remove all bones from the generated rig armature.
-        bpy.ops.object.mode_set(mode='EDIT')
-        for bone in obj.data.edit_bones:
-            obj.data.edit_bones.remove(bone)
-        bpy.ops.object.mode_set(mode='OBJECT')
+        if obj:
+            bpy.ops.object.mode_set(mode='EDIT')
+            for bone in obj.data.edit_bones:
+                obj.data.edit_bones.remove(bone)
+            bpy.ops.object.mode_set(mode='OBJECT')
 
         # Select and duplicate metarig
-        select_object(context, metarig, deselect_all=True)
 
-        bpy.ops.object.duplicate()
+        context.view_layer.objects.active = metarig
+        bpy.ops.object.duplicate({ "selected_objects": [metarig] })
 
         # Rename org bones in the temporary object
         temp_obj = context.view_layer.objects.active
@@ -180,18 +175,25 @@ class Generator(base_generate.BaseGenerator):
         self.__freeze_driver_vars(temp_obj)
         self.__rename_org_bones(temp_obj)
 
-        # Select the target rig and join
-        select_object(context, obj)
+        if obj:
+            saved_matrix = obj.matrix_world.copy()
+            obj.matrix_world = metarig.matrix_world
 
-        saved_matrix = obj.matrix_world.copy()
-        obj.matrix_world = metarig.matrix_world
+            context.view_layer.objects.active = obj
+            bpy.ops.object.join({
+                "object": obj,
+                "selected_editable_objects": [obj, temp_obj]
+            })
 
-        bpy.ops.object.join()
+            obj.matrix_world = saved_matrix
+        else:
+            obj = temp_obj
+            self.obj = temp_obj
 
-        obj.matrix_world = saved_matrix
+        obj.data.pose_position = 'POSE'
 
         # Select the generated rig
-        select_object(context, obj, deselect_all=True)
+        select_object(context, obj)
 
         # Clean up animation data
         if obj.animation_data:
@@ -216,16 +218,17 @@ class Generator(base_generate.BaseGenerator):
     def __rename_org_bones(self, obj):
         #----------------------------------
         # Make a list of the original bones so we can keep track of them.
-        original_bones = [bone.name for bone in obj.data.bones]
+        original_bones = []
 
         # Add the ORG_PREFIX to the original bones.
-        for i in range(0, len(original_bones)):
-            bone = obj.pose.bones[original_bones[i]]
-
+        for bone in obj.pose.bones:
             # This rig type is special in that it preserves the name of the bone.
             if get_rigify_type(bone) != 'basic.raw_copy':
-                bone.name = make_original_name(original_bones[i])
-                original_bones[i] = bone.name
+                bone.name = make_original_name(bone.name)
+                original_bones.append(bone.name)
+            else:
+                original_bones.append(bone.name)
+
 
         self.original_bones = original_bones
 
@@ -373,10 +376,27 @@ class Generator(base_generate.BaseGenerator):
         # Get rid of anim data in case the rig already existed
         print("Clear rig animation data.")
 
-        obj.animation_data_clear()
-        obj.data.animation_data_clear()
+        childs = {}  # {object: bone}
+        if obj:
+            obj.animation_data_clear()
+            obj.data.animation_data_clear()
 
-        select_object(context, obj, deselect_all=True)
+            #------------------------------------------
+            # Get parented objects to restore later
+            for child in obj.children:
+                childs[child] = child.parent_bone
+
+        t.tick("Init: ")
+
+        #------------------------------------------
+        # Copy bones from metarig to obj (adds ORG_PREFIX)
+        self.__duplicate_rig()
+
+        obj = self.obj
+
+        obj.data.use_mirror_x = False
+
+        t.tick("Duplicate rig: ")
 
         #------------------------------------------
         # Create Group widget
@@ -384,19 +404,6 @@ class Generator(base_generate.BaseGenerator):
 
         t.tick("Create main WGTS: ")
 
-        #------------------------------------------
-        # Get parented objects to restore later
-        childs = {}  # {object: bone}
-        for child in obj.children:
-            childs[child] = child.parent_bone
-
-        #------------------------------------------
-        # Copy bones from metarig to obj (adds ORG_PREFIX)
-        self.__duplicate_rig()
-
-        obj.data.use_mirror_x = False
-
-        t.tick("Duplicate rig: ")
 
         #------------------------------------------
         # Put the rig_name in the armature custom properties
